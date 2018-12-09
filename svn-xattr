@@ -1,0 +1,84 @@
+#!/usr/bin/php
+<?php
+
+$app = basename($argv[0]);
+array_shift($argv);
+$command = $argv[0] ?? '';
+array_shift($argv);
+
+if ($command === 'update') {
+  // For each argument (which may or may not be a glob):
+  foreach ($argv as $glob) {
+    foreach (glob($glob) as $file) {
+      // Get the names of all xattrs for this file.
+      $attrs = [];
+      exec('/usr/bin/xattr ' . escapeshellarg($file), $attrs, $exitCode);
+      if ($exitCode)
+        die("Error: xattr exited with non-zero status $exitCode.\n" . implode("\n", $attrs));
+
+      foreach ($attrs as $attr) {
+        if (in_array($attr, [
+          'com.apple.lastuseddate#PS',
+        ]))
+          continue;
+
+        // Get the value of this xattr.
+        $value = [];
+        exec('/usr/bin/xattr -p ' . escapeshellarg($attr) . ' ' . escapeshellarg($file), $value, $exitCode);
+        if ($exitCode)
+          die("Error: xattr exited with non-zero status $exitCode.\n" . implode("\n", $value));
+
+        // Store the value as a Subversion property.
+        system('svn propset ' . escapeshellarg('xattr:' . $attr) . ' ' . escapeshellarg(implode(' ', $value)) . ' ' . escapeshellarg($file));
+      }
+    }
+  }
+}
+
+elseif ($command === 'restore') {
+  // Use Subversion's `wc.db` as an efficient way
+  // to find all files with Subversion xattr:* properties.
+  $wcRoot = exec('svn info --show-item wc-root');
+  if (!is_dir($wcRoot))
+    die("Error: Can't find the root of the working copy.\n");
+
+  $wcDBPath = "$wcRoot/.svn/wc.db";
+  $files = [];
+  exec('/usr/bin/sqlite3 ' . escapeshellarg($wcDBPath) . ' "SELECT local_relpath FROM nodes_current WHERE properties LIKE \'%xattr:%\'"', $files, $exitCode);
+  if ($exitCode)
+    die("Error: sqlite3 exited with non-zero status $exitCode.\n" . implode("\n", $files));
+
+  foreach ($files as $file) {
+    $filePath = "$wcRoot/$file";
+
+    // Get the names of all xattrs for this file.
+    $attrs = [];
+    exec('svn proplist ' . escapeshellarg($filePath) . ' | fgrep xattr:', $attrs, $exitCode);
+    if ($exitCode)
+      die("Error: svn exited with non-zero status $exitCode.\n" . implode("\n", $attrs));
+
+    foreach ($attrs as $attr) {
+      $attr = trim($attr);
+
+      // Get the value of this xattr.
+      $value = [];
+      exec('svn propget ' . escapeshellarg($attr) . ' ' . escapeshellarg($filePath), $value, $exitCode);
+      if ($exitCode)
+        die("Error: svn exited with non-zero status $exitCode.\n" . implode("\n", $value));
+
+      // Apply the value to the file in the working copy.
+      echo "$file: applying $attr\n";
+      system('xattr -v -w -x ' . escapeshellarg(substr($attr, strlen('xattr:'))) . ' ' . escapeshellarg(implode(' ', $value)) . ' ' . escapeshellarg($filePath));
+    }
+  }
+}
+
+else {
+  $spc = str_repeat(' ', strlen($app));
+  die("Usage:
+
+    $app update [file …]    — Adds or updates Subversion xattr:* properties for the specified file(s).
+    $spc                      Ignores `com.apple.lastuseddate#PS`.
+
+    $app restore            — Recursively applies Subversion xattr:* properties to files in the working copy.\n");
+}
