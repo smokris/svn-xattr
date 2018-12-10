@@ -3,7 +3,7 @@
 
 $app = basename($argv[0]);
 array_shift($argv);
-$command = $argv[0] ?? '';
+$command = isset($argv[0]) ? $argv[0] : '';
 array_shift($argv);
 
 if ($command === 'update') {
